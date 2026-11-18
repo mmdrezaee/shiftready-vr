@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShiftReady VR</title>
+<style>
+  :root { --bg: #f4f6f9; --card: #ffffff; --ink: #1b2430; --muted: #5b6b7d; --accent: #1f4e79; --go: #1f9d55; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: Arial, Helvetica, sans-serif; line-height: 1.5; }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 16px 56px; }
+  h1 { font-size: 34px; margin: 0 0 4px; color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 17px; }
+  .card { background: var(--card); border-radius: 14px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
+  .go { display: inline-block; background: var(--go); color: #fff; text-decoration: none; font-weight: bold; padding: 13px 22px; border-radius: 10px; font-size: 18px; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  .muted { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ShiftReady VR</h1>
+  <p class="sub">Construction site hazard recognition training that runs in a headset browser or on a laptop.</p>
+
+  <div class="card">
+    <a class="go" href="trainer/">Open the site trainer</a>
+    <p class="muted" style="margin-bottom:0">Quest 3: open this page in the Meta Quest Browser and select <b>Enter VR</b>. Laptop: drag to look and click hazards. Nothing to install.</p>
+  </div>
+
+  <div class="card">
+    <b>What happens in a shift</b>
+    <ul>
+      <li>Rules from a site safety procedure turn into live situations on a busy construction site: a crane lift, an open edge on the top floor, a trench, a reversing truck, an excavator swing and a boom near power lines.</li>
+      <li>Spot each hazard before time runs out. Some workers look at risk but follow the rules, and wrong picks count as false alarms.</li>
+      <li>A learner profile adapts each shift: weaker rules come up more often and response windows tighten as skill grows.</li>
+      <li>Riley, a virtual safety coach, explains each rule and answers questions about the procedure.</li>
+      <li>Every shift can be exported as a CSV: reaction time, first look, false alarms and skill per rule.</li>
+    </ul>
+  </div>
+
+  <p class="muted">The procedure SP-CON-012 used in the trainer is fictional and written for demonstration only. Prototype by Mohammad Rezaeiashtiani.</p>
+</main>
+</body>
+</html>

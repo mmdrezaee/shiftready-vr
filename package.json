@@ -1,0 +1,13 @@
+{
+  "name": "shiftready-vr",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Construction site hazard recognition trainer in WebXR",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.2",
+    "three": "^0.160.0"
+  }
+}
