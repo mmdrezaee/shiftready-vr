@@ -26,17 +26,33 @@
   #coachBox .text { font-size: 15px; margin: 3px 0 6px; }
   #coachBox .chips button { background: #e3eaf3; color: #1f4e79; font-size: 12px; padding: 6px 9px; }
 
-  #docBox { top: 12px; left: 12px; width: 300px; max-height: calc(100% - 150px); overflow: auto; background: rgba(247,245,239,0.96); color: #1b2430; padding: 0 0 10px; }
+  #docBox { top: 12px; left: 12px; width: 300px; max-height: calc(100% - 150px); overflow: auto; position: fixed; background: rgba(247,245,239,0.96); color: #1b2430; padding: 0 0 10px; }
   #docBox .head { background: #1f4e79; color: #fff; padding: 9px 12px; border-radius: 12px 12px 0 0; }
   #docBox .head b { font-size: 15px; }
   #docBox .note { color: #b42318; font-size: 11px; padding: 6px 12px 2px; }
-  #docBox .rule { padding: 6px 12px; margin: 2px 6px; border-radius: 8px; font-size: 12.5px; }
-  #docBox .rule b { font-size: 13.5px; display: block; }
+  #docBox .rule { padding: 5px 12px; margin: 2px 6px; border-radius: 8px; font-size: 12px; line-height: 1.3; }
+  #docBox .rule b { font-size: 13px; display: block; }
   #docBox .rule.live { background: #ffeaa0; }
   #docBox .rule.convert { background: #ffd200; }
   #docBox .banner { margin: 6px 6px 0; background: #1b2430; color: #ffd200; border-radius: 8px; padding: 8px; text-align: center; font-weight: bold; }
 
-  #hudBox { top: 12px; right: 12px; width: 330px; padding: 12px 14px; }
+  #hudBox { top: 12px; right: 12px; width: 330px; padding: 12px 14px; max-height: calc(100% - 24px); overflow: auto; }
+  ol.steps { margin: 4px 0 10px; padding-left: 20px; font-size: 13px; }
+  ol.steps li { margin: 2px 0; }
+  .usual { border-left: 5px solid #ff6a4d; padding-left: 10px; }
+  .usual .tag { color: #ff6a4d; font-weight: bold; font-size: 12px; letter-spacing: 1px; }
+  .usual .big { font-size: 24px; font-weight: bold; margin: 2px 0 8px; }
+  .usual .stat { display: flex; justify-content: space-between; font-size: 14px; margin: 3px 0; }
+  .usual .note2 { color: #ffd200; font-weight: bold; margin: 10px 0; }
+  .count { font-size: 72px; color: #ffd200; font-weight: bold; text-align: center; line-height: 1.1; }
+  .clear { border-radius: 8px; padding: 8px 10px; font-weight: bold; font-size: 17px; margin: 4px 0 4px; }
+  .clear.ok { background: #1f7a3d; color: #fff; }
+  .clear.no { background: #8a3a24; color: #fff; }
+  table.cmp { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
+  table.cmp th { text-align: left; color: #93a3b5; font-weight: normal; padding: 2px 4px; }
+  table.cmp td { padding: 3px 4px; border-top: 1px solid rgba(255,255,255,0.1); }
+  table.cmp td:nth-child(2) { color: #ff8a6d; }
+  table.cmp td:nth-child(3) { color: #3ccf7a; font-weight: bold; }
   #hudBox .score { font-size: 40px; font-weight: bold; color: #ffd200; line-height: 1; }
   #hudBox .msg { background: rgba(255,255,255,0.08); border-radius: 8px; padding: 9px; font-weight: bold; font-size: 16px; margin: 8px 0; }
   .timer { height: 16px; background: #2c3744; border-radius: 8px; overflow: hidden; position: relative; margin-top: 8px; }
@@ -61,7 +77,25 @@
     #hudBox { width: min(330px, calc(100% - 24px)); }
   }
   @media (max-width: 640px) { #bar .hint { display: none; } }
+  #coachBox { z-index: 2; }
+  #hudBox { z-index: 3; }
+  /* laptops with display scaling and small windows: coach bottom-left, score panel right */
+  @media (min-width: 641px) and (max-width: 1099px) {
+    #coachBox { left: 12px; transform: none; width: min(470px, calc(100% - 378px)); bottom: 118px; top: auto; }
+    #docBox { max-height: calc(100% - 330px); }
+    #docToggle { left: auto; right: 12px; bottom: 122px; }
+  }
+  @media (max-width: 1099px) {
+    body[data-phase="live"] #coachBox .chips, body[data-phase="resolve"] #coachBox .chips, body[data-phase="gap"] #coachBox .chips, body[data-phase="convert"] #coachBox .chips { display: none; }
+  }
+  /* phones: keep the page large while it is on screen */
+  @media (max-width: 640px) {
+    body[data-phase="docs"] #coachBox .chips, body[data-phase="convertAll"] #coachBox .chips, body[data-phase="countdown"] #coachBox .chips, body.review #coachBox .chips { display: none; }
+    body[data-phase="docs"] .usual .stat { display: none; }
+  }
   body.xr .card, body.xr #bar, body.xr #docToggle { display: none !important; }
+  body[data-phase="intro"] #docBox, body[data-phase="docs"] #docBox, body[data-phase="convertAll"] #docBox, body[data-phase="countdown"] #docBox, body.review #docBox,
+  body[data-phase="intro"] #docToggle, body[data-phase="docs"] #docToggle, body[data-phase="convertAll"] #docToggle, body[data-phase="countdown"] #docToggle, body.review #docToggle { display: none !important; }
 </style>
 </head>
 <body>

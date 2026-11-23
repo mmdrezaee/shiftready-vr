@@ -4,11 +4,11 @@ import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import {
   M, box, cyl, sign, cone, ribbon, makeGround, makeTrench, TRENCH, makeWorker, animateWalk,
   makeDumpTruck, makeExcavator, makeBoomTruck, setBoom, makeTowerCrane, setCrane, makeBuilding,
-  makePowerLine, makeSiteOffice,
+  makePowerLine, makeSiteOffice, makePickup, makeProtectedArea, PROTECTED,
 } from './world.js';
-import { Panel, panels } from './panel.js';
+import { Panel, panels, roundRect } from './panel.js';
 import { audio, initAudio, setSound, addEngine, setEngineLoad, addBeeper, updateBeeper, cue } from './audio.js';
-import { PROCEDURE, RULES, CATS, ROLES, SITUATIONS_PER_SHIFT, BADGES, FAQ } from './content.js';
+import { PROCEDURE, RULES, CATS, ROLES, SITUATIONS_PER_SHIFT, BADGES, FAQ, DOC_PAGES } from './content.js';
 
 window.__errors = [];
 window.addEventListener('error', (e) => window.__errors.push(String(e.message)));
@@ -60,6 +60,8 @@ scene.add(building);
 const crane = makeTowerCrane(30);
 crane.position.set(22, 0, -46);
 scene.add(crane);
+
+scene.add(makeProtectedArea());
 
 const POWER_Z = -35;
 scene.add(makePowerLine(POWER_Z, [-45, -24, -3], 10));
@@ -126,6 +128,13 @@ const boomTruck = addActor('boomTruck', makeBoomTruck(), { safeText: 'The boom t
 boomTruck.rotation.y = Math.PI / 2;
 boomTruck.position.set(-15, 0, -30.5);
 scene.add(boomTruck);
+
+const PICKUP_HOME = new THREE.Vector3(22.6, 0, -18.0);
+const PICKUP_PATH = [new THREE.Vector3(21.2, 0, -22.4), new THREE.Vector3(19.2, 0, -26.0)];
+const pickup = addActor('pickup', makePickup(), { safeText: 'That pickup is parked in the laydown area, off the protected ground. Fine.' });
+pickup.position.copy(PICKUP_HOME);
+pickup.rotation.y = Math.PI;
+scene.add(pickup);
 
 addActor('crane', crane, { safeText: 'The crane is lifting over the barricaded zone with nobody underneath. That is fine.' });
 
@@ -348,6 +357,40 @@ const SIT = {
     update(t, dt) { animateWalk(wPow, 0, dt); },
     reset() { eq.boomYawT = 0; eq.boomPitchT = 0.08; eq.boomLenT = 6; wPow.visible = false; },
   },
+  env: {
+    hazards: ['pickup'],
+    focus: pickup,
+    setup() { pickup.userData.leg = 0; },
+    update(t, dt) {
+      let moving = false;
+      const leg = pickup.userData.leg || 0;
+      if (t > 1.0 && leg < PICKUP_PATH.length) {
+        const p = PICKUP_PATH[leg];
+        const dx = p.x - pickup.position.x, dz = p.z - pickup.position.z;
+        const d = Math.hypot(dx, dz);
+        const step = Math.min(d, 2.3 * dt);
+        if (d < 0.05) pickup.userData.leg = leg + 1;
+        else {
+          pickup.position.x += (dx / d) * step;
+          pickup.position.z += (dz / d) * step;
+          const target = Math.atan2(dx, dz);
+          let diff = target - pickup.rotation.y;
+          diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+          pickup.rotation.y += diff * Math.min(1, dt * 3);
+          moving = true;
+        }
+      }
+      if (engines.pickup) setEngineLoad(engines.pickup, moving ? 0.55 : 0.08);
+      pickup.userData.beacon.material.color.setHSL(0.08, 1, moving ? 0.45 + 0.25 * Math.sin(simT * 12) : 0.35);
+    },
+    reset() {
+      pickup.position.copy(PICKUP_HOME);
+      pickup.rotation.y = Math.PI;
+      pickup.userData.leg = 0;
+      if (engines.pickup) setEngineLoad(engines.pickup, 0.05);
+      pickup.userData.beacon.material.color.setHSL(0.08, 1, 0.35);
+    },
+  },
 };
 
 // ---------------------------------------------------------------- learner model and shift state
@@ -355,6 +398,8 @@ const S = {
   phase: 'intro', role: 'new', shiftNo: 0, idx: 0, cat: null, t: 0, phaseT: 0, window: 10,
   score: 0, streak: 0, best: 0, caught: 0, falseAlarms: 0, msg: '', badges: [], missed: new Set(),
   lastCat: null, hinted: false, rec: null, records: [], allRecords: [], skill: {}, reactions: [],
+  plan: [], converted: false, docPage: 0, readT: 0, pagesRead: new Set([DOC_PAGES[0].no]), lit: new Set(), litNow: null,
+  review: false, shiftT: 0, cleared: false, uncleared: [], lastUncleared: [],
 };
 function baseSkills(role) { const o = {}; for (const c of CATS) o[c] = ROLES[role].skill; return o; }
 S.skill = baseSkills(S.role);
@@ -367,30 +412,78 @@ function saveProfile() {
 }
 
 function windowFor(cat) { return Math.max(5, ROLES[S.role].window * (1 - 0.3 * S.skill[cat])); }
+// Every shift covers every rule on the page once (rules missed last shift come first),
+// then any extra situations go to the rule with the lowest skill.
+function planShift() {
+  const first = S.lastUncleared.filter((c) => CATS.includes(c)).sort((a, b) => S.skill[a] - S.skill[b]);
+  const rest = CATS.filter((c) => !first.includes(c));
+  for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
+  S.plan = first.concat(rest);
+}
 function pickNext() {
-  const pool = CATS.filter((c) => c !== S.lastCat);
-  const w = pool.map((c) => Math.pow(1.05 - S.skill[c], 1.5) + 0.03);
-  let r = Math.random() * w.reduce((a, b) => a + b, 0);
-  for (let i = 0; i < pool.length; i++) { r -= w[i]; if (r <= 0) return pool[i]; }
-  return pool[pool.length - 1];
+  if (S.idx <= S.plan.length) return S.plan[S.idx - 1];
+  return CATS.filter((c) => c !== S.lastCat).sort((a, b) => S.skill[a] - S.skill[b])[0];
 }
 function weakest(n = 2) { return [...CATS].sort((a, b) => S.skill[a] - S.skill[b]).slice(0, n); }
 
-function setPhase(p) { S.phase = p; S.phaseT = 0; }
+function setPhase(p) { S.phase = p; S.phaseT = 0; document.body.dataset.phase = p; }
 
 function startShift(role = S.role) {
   initAudioOnce();
   if (role !== S.role) { S.role = role; S.skill = baseSkills(role); }
   S.shiftNo += 1;
-  Object.assign(S, { idx: 0, cat: null, score: 0, streak: 0, best: 0, caught: 0, falseAlarms: 0, badges: [], missed: new Set(), lastCat: null, records: [], reactions: [] });
+  Object.assign(S, { idx: 0, cat: null, score: 0, streak: 0, best: 0, caught: 0, falseAlarms: 0, badges: [], missed: new Set(), lastCat: null, records: [], reactions: [], shiftT: 0, review: false });
   S.msg = 'Shift starting. Watch the site.';
   for (const c of CATS) SIT[c].reset();
+  planShift();
+  hidePage();
   setPhase('gap');
-  S.phaseT = -2.5;
-  const weak = weakest(1)[0];
-  coachSay(S.shiftNo === 1
-    ? `Morning. You're on as a ${ROLES[S.role].label.toLowerCase()}. Rules from the procedure will come alive on site. Point at anything that breaks the rule on the page.`
-    : `Shift ${S.shiftNo}. I'll bring up ${RULES[weak].short.toLowerCase()} more often, since that was your weakest last time.`);
+  drawAll();
+}
+
+// ---------------------------------------------------------------- the usual way: reading the page
+function enterDocs() {
+  initAudioOnce();
+  S.docPage = 0;
+  S.readT = 0;
+  S.pagesRead = new Set([DOC_PAGES[0].no]);
+  S.lit = new Set();
+  S.litNow = null;
+  yaw = 0; pitch = -0.05;
+  setPhase('docs');
+  showPage();
+  coachSay(`This is how site orientation usually works: page ${DOC_PAGES[0].no} of a ${PROCEDURE.pages}-page document you read before every new site. Every rule is correct, and none of it is practised. When you're ready, press Turn this into training.`);
+  drawAll();
+}
+
+function beginConvertAll() {
+  if (S.docPage !== 0) S.docPage = 0;
+  S.lit = new Set();
+  S.litNow = null;
+  yaw = 0; pitch = -0.05;
+  setPhase('convertAll');
+  drawPage();
+  coachSay('Watch. Every rule on that page becomes something you will see happen on this site.');
+  drawAll();
+}
+
+function beginCountdown() {
+  initAudioOnce();
+  S.review = false;
+  yaw = 0; pitch = -0.14;
+  setPhase('countdown');
+  const vr = renderer.xr.isPresenting;
+  const act = vr ? 'point at it and pull the trigger' : 'click it';
+  let line;
+  if (S.shiftNo === 0) line = `Eyes on the site. When someone or something breaks a rule from the page, ${act}. Spot every rule to get cleared for site entry.`;
+  else if (S.lastUncleared.length) {
+    const n = S.lastUncleared.map((c) => RULES[c].short.toLowerCase());
+    const list = n.length === 1 ? n[0] : n.slice(0, -1).join(', ') + ' and ' + n[n.length - 1];
+    line = `Shift ${S.shiftNo + 1}. The rules you still need for clearance come first: ${list}.`;
+  }
+  else line = `Shift ${S.shiftNo + 1}. Same rules, and the time windows tighten as your skill grows.`;
+  coachSay(line);
+  cue('tick');
   drawAll();
 }
 
@@ -402,6 +495,8 @@ function beginConvert() {
   S.msg = `Rule ${RULES[S.cat].no} → live situation`;
   cue('convert');
   setPhase('convert');
+  // on small screens the procedure hides behind a button, so show it while the rule converts
+  if (window.innerWidth <= 900) $('docBox').classList.add('open');
   drawAll();
 }
 
@@ -411,6 +506,7 @@ function beginLive() {
   S.rec = { shift: S.shiftNo, n: S.idx, cat: S.cat, rule: RULES[S.cat].no, outcome: '', reaction: null, firstLook: null, window: S.window, falseAlarms: 0, points: 0, skillAfter: 0 };
   SIT[S.cat].setup();
   S.msg = 'Find the hazard!';
+  if (window.innerWidth <= 900) $('docBox').classList.remove('open');
   setPhase('live');
   drawAll();
 }
@@ -473,16 +569,66 @@ function finishShift() {
   for (const c of CATS) SIT[c].reset();
   hideMarker();
   if (S.caught === SITUATIONS_PER_SHIFT && S.falseAlarms === 0 && !S.badges.includes('clean')) S.badges.push('clean');
+  const caughtCats = new Set(S.records.filter((r) => r.outcome === 'caught').map((r) => r.cat));
+  S.uncleared = CATS.filter((c) => !caughtCats.has(c));
+  S.cleared = S.uncleared.length === 0;
+  S.lastUncleared = S.uncleared.slice();
+  if (document.getElementById('docBox')) $('docBox').classList.remove('open');
   setPhase('debrief');
   saveProfile();
   const avg = S.reactions.length ? (S.reactions.reduce((a, b) => a + b, 0) / S.reactions.length).toFixed(1) : '-';
-  const weak = weakest(2).map((c) => RULES[c].short.toLowerCase());
-  coachSay(`Shift done. You caught ${S.caught} of ${S.records.length}, average ${avg} seconds. Next shift we'll practise ${weak.join(' and ')}.`);
+  if (S.cleared) {
+    cue('cleared');
+    coachSay(`Shift done. You spotted a breach of every rule on the page, so you're cleared for site entry. Average reaction ${avg} seconds.`);
+  } else {
+    const names = S.uncleared.map((c) => `${RULES[c].no} ${RULES[c].short.toLowerCase()}`);
+    coachSay(`Shift done. Not cleared yet: you still need to spot ${names.join(', ')}. Those come first next shift.`);
+  }
   drawAll();
 }
 
+const CONV = { start: 0.6, stagger: 0.65, fly: 1.7 };
 function updateShift(dt) {
   S.phaseT += dt;
+  if (['gap', 'convert', 'live', 'resolve'].includes(S.phase)) S.shiftT += dt;
+  if (S.phase === 'docs') {
+    S.readT += dt;
+    updateReadHtml();
+    return;
+  }
+  if (S.phase === 'convertAll') {
+    const i = Math.floor((S.phaseT - CONV.start) / CONV.stagger);
+    if (i >= 0 && i < CATS.length && !S.lit.has(CATS[i])) {
+      const c = CATS[i];
+      S.lit.add(c);
+      S.litNow = c;
+      launchLabel(c);
+      cue('whoosh');
+      drawPage();
+      htmlMain();
+      if (renderer.xr.isPresenting) drawMain();
+    }
+    if (S.phaseT >= CONV.start + (CATS.length - 1) * CONV.stagger + CONV.fly + 0.4) {
+      S.converted = true;
+      S.litNow = null;
+      beginCountdown();
+    }
+    return;
+  }
+  if (S.phase === 'countdown') {
+    pageP.mesh.material.opacity = clamp(1 - S.phaseT / 0.7, 0, 1);
+    if (pageP.mesh.material.opacity <= 0) hidePage();
+    const n = 3 - Math.floor(S.phaseT);
+    if (n !== S.count) {
+      S.count = n;
+      if (n > 0 && S.phaseT > 0.05) cue('tick');
+      const el = document.getElementById('countNum');
+      if (el && n > 0) el.textContent = n;
+      if (renderer.xr.isPresenting) drawMain();
+    }
+    if (S.phaseT >= 3) startShift(S.role);
+    return;
+  }
   if (S.phase === 'gap' && S.phaseT >= 1.4) {
     if (S.idx >= SITUATIONS_PER_SHIFT) finishShift();
     else beginConvert();
@@ -548,7 +694,7 @@ function hideMarker() { marker.visible = false; markerTarget = null; }
 // ---------------------------------------------------------------- panels
 const mainP = new Panel(1.0, 0.72, 1000, 720);
 const chipsP = new Panel(1.0, 0.3, 1000, 300);
-const docP = new Panel(0.86, 1.0, 860, 1000);
+const docP = new Panel(0.86, 1.1, 860, 1100);
 const bubbleP = new Panel(1.3, 0.52, 1300, 520);
 // In VR the panels stand in the world around the viewer.
 const WORLD_POSE = new Map([
@@ -578,32 +724,55 @@ const ROLE_SHORT = { new: 'New worker', trade: 'Experienced trade', super: 'Site
 function drawMain() {
   const p = mainP.begin();
   if (S.phase === 'intro') {
-    p.text('ShiftReady', 50, 40, { size: 66, weight: 'bold', color: '#ffd200' });
-    p.text('Construction site hazard trainer · live shift', 52, 118, { size: 30, color: '#cfd8e3' });
-    p.text('Rules from a site safety procedure become live situations on this site. Spot each hazard before time runs out. Some things look risky but are safe, and wrong picks count as false alarms.', 52, 175, { size: 28, maxW: 900 });
-    p.text('Choose your role', 52, 352, { size: 30, weight: 'bold' });
-    ROLE_KEYS.forEach((k, i) => p.button('role_' + k, 52 + i * 305, 400, 285, 74, ROLE_SHORT[k], { color: S.role === k ? '#2f6fd6' : '#3a4656', active: S.role === k, size: 28 }));
-    p.button('start', 300, 515, 400, 92, S.shiftNo ? `Start shift ${S.shiftNo + 1}` : 'Start shift', { color: '#1f9d55', size: 38 });
-    p.button('sound', 760, 640, 200, 52, audio.on ? 'Sound: on' : 'Sound: off', { color: '#3a4656', size: 24 });
-    p.text('Procedure SP-CON-012 is fictional · prototype', 52, 655, { size: 22, color: '#93a3b5' });
+    p.text('ShiftReady', 50, 34, { size: 62, weight: 'bold', color: '#ffd200' });
+    p.text('Site-specific clearance trainer', 52, 108, { size: 30, color: '#cfd8e3' });
+    let y = p.text('Before working on a new site, workers read its orientation documents. Here the same rules become a live shift on this site.', 52, 156, { size: 26, maxW: 900 });
+    for (const line of ['1. Choose your role.', '2. The usual way: the orientation page you would normally read.', '3. Turn it into training: each rule becomes a live situation.', '4. Get cleared: spot a breach of every rule.']) y = p.text(line, 64, y + 4, { size: 23, color: '#e6edf5' });
+    ROLE_KEYS.forEach((k, i) => p.button('role_' + k, 52 + i * 305, 430, 285, 70, ROLE_SHORT[k], { color: S.role === k ? '#2f6fd6' : '#3a4656', active: S.role === k, size: 28 }));
+    p.button('start', 300, 530, 400, 88, S.converted ? `Start shift ${S.shiftNo + 1}` : 'Start', { color: '#1f9d55', size: 38 });
+    p.button('sound', 760, 645, 200, 52, audio.on ? 'Sound: on' : 'Sound: off', { color: '#3a4656', size: 24 });
+    p.text('Orientation document and site are fictional · prototype', 52, 660, { size: 22, color: '#93a3b5' });
+  } else if (S.phase === 'docs') {
+    p.rect(0, 0, 14, 720, '#ff6a4d', 0);
+    p.text('THE USUAL WAY', 50, 36, { size: 30, weight: 'bold', color: '#ff6a4d' });
+    p.text(`Reading time ${fmtTime(S.readT)}`, 50, 92, { size: 56, weight: 'bold' });
+    p.text(`Pages read: ${S.pagesRead.size} of ${PROCEDURE.pages}`, 52, 190, { size: 32 });
+    p.text('Situations practised: 0', 52, 240, { size: 32 });
+    p.text('Feedback received: none', 52, 290, { size: 32 });
+    p.text('Adapted to you: no', 52, 340, { size: 32 });
+    p.text('Every rule is here. None of it is practised.', 52, 420, { size: 30, weight: 'bold', color: '#ffd200', maxW: 900 });
+    p.button('nextpage', 52, 560, 300, 90, 'Next page', { color: '#3a4656', size: 32 });
+    p.button('convert', 380, 560, 570, 90, 'Turn this into training', { color: '#1f9d55', size: 36 });
+  } else if (S.phase === 'convertAll') {
+    p.text('From the page to the site', 50, 40, { size: 46, weight: 'bold', color: '#ffd200' });
+    if (S.litNow) {
+      p.text(`Rule ${RULES[S.litNow].no} → live situation`, 52, 160, { size: 44, weight: 'bold' });
+      p.text(RULES[S.litNow].short, 52, 230, { size: 40 });
+    }
+    p.text(`${S.lit.size} of ${CATS.length} rules placed on site`, 52, 360, { size: 32, color: '#93a3b5' });
+  } else if (S.phase === 'countdown') {
+    p.text(String(Math.max(1, 3 - Math.floor(S.phaseT))), 500, 150, { size: 220, weight: 'bold', color: '#ffd200', align: 'center' });
+    p.text('Your shift starts on the viewing deck', 500, 470, { size: 40, weight: 'bold', align: 'center' });
   } else if (S.phase === 'debrief') {
     const avg = S.reactions.length ? (S.reactions.reduce((a, b) => a + b, 0) / S.reactions.length).toFixed(1) + ' s' : '-';
-    p.text(`Shift ${S.shiftNo} debrief`, 50, 32, { size: 50, weight: 'bold', color: '#ffd200' });
-    p.text(`Caught ${S.caught} of ${S.records.length}   ·   Avg reaction ${avg}   ·   False alarms ${S.falseAlarms}   ·   Best streak ${S.best}`, 52, 100, { size: 25, color: '#e6edf5' });
-    p.text(`Score ${S.score}`, 52, 140, { size: 34, weight: 'bold' });
-    p.text(S.badges.length ? 'Badges: ' + S.badges.map((b) => BADGES[b]).join(' · ') : 'Badges: none yet', 52, 188, { size: 24, color: '#ffd200', maxW: 900 });
-    p.text('Learner profile (updates after every situation)', 52, 245, { size: 26, weight: 'bold' });
+    p.text(`Shift ${S.shiftNo} debrief`, 50, 26, { size: 44, weight: 'bold', color: '#ffd200' });
+    p.text(S.cleared ? '✓ CLEARED FOR SITE ENTRY' : 'NOT YET CLEARED: ' + S.uncleared.map((c) => RULES[c].no).join(', '), 52, 84, { size: 32, weight: 'bold', color: S.cleared ? '#3ccf7a' : '#ff8a6d', maxW: 900 });
+    p.text(`Caught ${S.caught} of ${S.records.length}  ·  Avg ${avg}  ·  False alarms ${S.falseAlarms}  ·  Score ${S.score}`, 52, 134, { size: 24, color: '#e6edf5' });
+    p.text(S.badges.length ? 'Badges: ' + S.badges.map((b) => BADGES[b]).join(' · ') : 'Badges: none yet', 52, 172, { size: 22, color: '#ffd200', maxW: 900 });
+    p.text('Learner profile', 52, 214, { size: 24, weight: 'bold' });
     CATS.forEach((c, i) => {
-      const y = 290 + i * 46;
-      p.text(`${RULES[c].no} ${RULES[c].short}`, 52, y, { size: 24 });
-      p.rect(400, y + 2, 420, 26, '#2c3744', 8);
+      const y = 250 + i * 39;
+      p.text(`${RULES[c].no} ${RULES[c].short}`, 52, y, { size: 22 });
+      p.rect(400, y + 2, 420, 24, '#2c3744', 8);
       const v = S.skill[c];
-      p.rect(400, y + 2, Math.max(10, 420 * v), 26, v < 0.45 ? '#ff6a4d' : v < 0.7 ? '#ffc94d' : '#3ccf7a', 8);
-      p.text(Math.round(v * 100) + '%', 835, y, { size: 24 });
+      p.rect(400, y + 2, Math.max(10, 420 * v), 24, v < 0.45 ? '#ff6a4d' : v < 0.7 ? '#ffc94d' : '#3ccf7a', 8);
+      p.text(Math.round(v * 100) + '%', 835, y, { size: 22 });
     });
-    p.button('next', 52, 590, 300, 80, 'Next shift', { color: '#1f9d55', size: 32 });
-    p.button('csv', 372, 590, 280, 80, 'Export CSV', { color: '#2f6fd6', size: 30 });
-    p.button('roles', 672, 590, 280, 80, 'Change role', { color: '#3a4656', size: 28 });
+    p.text(`Usual way: ${fmtTime(S.readT)} reading, 0 practised  ·  ShiftReady: ${new Set(S.records.map((r) => r.cat)).size} of ${CATS.length} rules live, feedback on each`, 52, 532, { size: 21, color: '#cfd8e3', maxW: 900 });
+    p.button('next', 40, 610, 220, 78, 'Next shift', { color: '#1f9d55', size: 28 });
+    p.button('page', 275, 610, 250, 78, S.review ? 'Hide page' : 'Show page', { color: '#3a4656', size: 28, active: S.review });
+    p.button('csv', 540, 610, 200, 78, 'CSV', { color: '#2f6fd6', size: 28 });
+    p.button('roles', 755, 610, 205, 78, 'Change role', { color: '#3a4656', size: 26 });
   } else {
     const mult = 1 + 0.5 * Math.min(S.streak, 4);
     p.text(`Shift ${S.shiftNo} · ${ROLES[S.role].label}`, 40, 30, { size: 28, color: '#cfd8e3' });
@@ -632,27 +801,27 @@ function drawDoc() {
   p.rect(0, 0, 860, 120, '#1f4e79', 18);
   p.text(`${PROCEDURE.code} · ${PROCEDURE.rev}`, 36, 22, { size: 36, weight: 'bold', color: '#ffffff' });
   p.text(PROCEDURE.page, 824, 30, { size: 24, color: '#cfe0f0', align: 'right' });
-  p.text('Site Safety Procedure', 36, 72, { size: 26, color: '#cfe0f0' });
+  p.text('Site-specific orientation', 36, 72, { size: 26, color: '#cfe0f0' });
   p.text(PROCEDURE.note, 36, 135, { size: 21, color: '#b42318', maxW: 790 });
-  let y = 195;
+  let y = 180;
   const active = ['convert', 'live', 'resolve'].includes(S.phase) ? S.cat : null;
   for (const c of CATS) {
     const r = RULES[c];
     const g = p.g;
-    g.font = '22px Arial';
-    const h = 34 + Math.ceil(g.measureText(r.text).width / 760) * 28 + 14;
+    g.font = '20px Arial';
+    const h = 31 + wrapLines(g, r.text, 780).length * 25 + 12;
     if (c === active) p.rect(20, y - 8, 820, h, S.phase === 'convert' ? '#ffd200' : '#ffeaa0', 10);
-    p.text(`${r.no}  ${r.short}`, 36, y, { size: 26, weight: 'bold', color: '#1b2430' });
-    y = p.text(r.text, 36, y + 34, { size: 22, color: '#2f3a48', maxW: 780, lh: 1.27 }) + 14;
+    p.text(`${r.no}  ${r.short}`, 36, y, { size: 24, weight: 'bold', color: '#1b2430' });
+    y = p.text(r.text, 36, y + 31, { size: 20, color: '#2f3a48', maxW: 780, lh: 1.25 }) + 12;
   }
   if (active) {
-    p.rect(20, 900, 820, 80, '#1b2430', 14);
-    p.text(`Rule ${RULES[active].no}  →  live situation on site`, 430, 922, { size: 32, weight: 'bold', color: S.phase === 'convert' ? '#ffd200' : '#ffffff', align: 'center' });
+    p.rect(20, 1006, 820, 80, '#1b2430', 14);
+    p.text(`Rule ${RULES[active].no}  →  live situation on site`, 430, 1028, { size: 32, weight: 'bold', color: S.phase === 'convert' ? '#ffd200' : '#ffffff', align: 'center' });
   }
   p.commit();
 }
 
-const coachState = { text: 'Hi, I\'m Riley. Choose a role and start the shift. You can ask me about any rule.', speaking: 0 };
+const coachState = { text: 'Hi, I\'m Riley, your site coach. Choose a role and press Start. You can ask me about any rule.', speaking: 0 };
 function voiceLabel() {
   const ans = CFG.proxyUrl ? 'online AI' : 'offline procedure';
   const voice = audio.on && 'speechSynthesis' in window ? 'browser speech' : 'subtitles';
@@ -660,7 +829,7 @@ function voiceLabel() {
 }
 function drawBubble() {
   const p = bubbleP.begin('rgba(255,255,255,0.95)', 30);
-  p.text('Riley · Site safety coach', 40, 26, { size: 32, weight: 'bold', color: '#1f4e79' });
+  p.text('Riley · Site coach', 40, 26, { size: 32, weight: 'bold', color: '#1f4e79' });
   p.text(coachState.text, 40, 78, { size: 31, color: '#1b2430', maxW: 1220, lh: 1.25 });
   p.text(voiceLabel(), 40, 474, { size: 22, color: '#6b7a8c' });
   p.commit();
@@ -676,6 +845,207 @@ function drawChips() {
   p.commit();
 }
 
+// ---------------------------------------------------------------- orientation page (3D, all modes)
+const PAGE_W = 1.6, PAGE_H = 1.0;
+const pageP = new Panel(PAGE_W, PAGE_H, 1600, 1000);
+pageP.mesh.renderOrder = 18;
+pageP.mesh.visible = false;
+camera.add(pageP.mesh);
+const COLS = [56, 826];
+const COL_W = 718;
+const BODY_TOP = 150, BODY_BOTTOM = 884;
+let paraRects = {};
+
+function wrapLines(g, text, maxW) {
+  const out = [];
+  let line = '';
+  for (const w of String(text).split(' ')) {
+    const t = line ? line + ' ' + w : w;
+    if (g.measureText(t).width > maxW && line) { out.push(line); line = w; } else line = t;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+function drawPage() {
+  const page = DOC_PAGES[S.docPage];
+  const p = pageP.begin('#f7f5ef', 16);
+  const g = p.g;
+  p.rect(0, 0, 1600, 116, '#1f4e79', 16);
+  p.rect(0, 80, 1600, 36, '#1f4e79', 0);
+  p.text(PROCEDURE.title.toUpperCase(), 56, 22, { size: 30, weight: 'bold', color: '#ffffff' });
+  p.text(`${PROCEDURE.site}  ·  ${PROCEDURE.code}  ·  ${PROCEDURE.rev}  ·  fictional sample for this demo`, 56, 70, { size: 22, color: '#cfe0f0' });
+  p.text(`Page ${page.no} of ${PROCEDURE.pages}`, 1544, 28, { size: 26, color: '#ffffff', align: 'right', weight: 'bold' });
+  paraRects = {};
+  const caught = new Set(S.records.filter((r) => r.outcome === 'caught').map((r) => r.cat));
+  let col = 0, y = BODY_TOP;
+  for (const para of page.paras) {
+    g.font = '22px Arial, Helvetica, sans-serif';
+    const lines = wrapLines(g, para.t, COL_W);
+    const h = 32 + lines.length * 28 + 14;
+    if (y + h > BODY_BOTTOM && col === 0) { col = 1; y = BODY_TOP; }
+    const x = COLS[col];
+    if (para.cat) {
+      paraRects[para.cat] = { x: x - 14, y: y - 8, w: COL_W + 28, h: h - 4 };
+      let fill = null;
+      if (S.review) fill = caught.has(para.cat) ? '#d3f2dc' : '#ffd9d2';
+      else if (S.litNow === para.cat) fill = '#ffd200';
+      else if (S.lit.has(para.cat)) fill = '#ffeaa0';
+      if (fill) p.rect(x - 14, y - 8, COL_W + 28, h - 4, fill, 8);
+      if (S.review) p.text(caught.has(para.cat) ? '✓ spotted' : '✗ not yet', x + COL_W + 6, y, { size: 21, weight: 'bold', color: caught.has(para.cat) ? '#1f7a3d' : '#b42318', align: 'right' });
+    }
+    p.text(para.h, x, y, { size: 24, weight: 'bold', color: '#1b2430' });
+    g.font = '22px Arial, Helvetica, sans-serif';
+    g.fillStyle = '#2f3a48';
+    g.textAlign = 'left';
+    lines.forEach((ln, i) => g.fillText(ln, x, y + 32 + i * 28));
+    y += h;
+  }
+  g.fillStyle = '#c9c4b6';
+  g.fillRect(56, 900, 1488, 2);
+  p.text('Read and sign before site entry  ·  uncontrolled when printed', 1544, 936, { size: 20, color: '#7a7466', align: 'right' });
+  if (S.review) p.button('pageback', 56, 914, 340, 68, 'Back to debrief', { color: '#2f6fd6', size: 28 });
+  else if (S.phase === 'docs') {
+    p.button('nextpage', 56, 914, 240, 68, 'Next page', { color: '#3a4656', size: 28 });
+    p.button('convert', 316, 914, 470, 68, 'Turn this into training', { color: '#1f9d55', size: 30 });
+  } else p.text('Turning each rule into a live situation on site…', 56, 932, { size: 24, weight: 'bold', color: '#1f4e79' });
+  p.commit();
+}
+
+function placePage() {
+  const m = pageP.mesh;
+  if (!m.visible) return;
+  if (renderer.xr.isPresenting) {
+    if (m.parent !== scene) scene.add(m);
+    m.scale.setScalar(1);
+    m.position.set(-0.3, EYE_Y - 0.25, -1.5);
+    m.lookAt(-0.3, EYE_Y - 0.1, 0);
+    return;
+  }
+  if (m.parent !== camera) camera.add(m);
+  const W = window.innerWidth, H = window.innerHeight;
+  const hud = $('hudBox').getBoundingClientRect();
+  const co = $('coachBox').getBoundingClientRect();
+  const narrow = W < 640;
+  let L = 12, T = 12, R = W - 12;
+  const B = Math.max(T + 120, Math.min(H - 12, co.top - 10));
+  if (narrow) T = Math.min(hud.bottom + 10, B - 120); else R = hud.left - 14;
+  let w = R - L, h = B - T;
+  if (w / h > PAGE_W / PAGE_H) w = h * PAGE_W / PAGE_H; else h = w * PAGE_H / PAGE_W;
+  const cx = narrow ? W / 2 : L + w / 2, cy = T + h / 2;
+  const k = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / H;
+  m.scale.setScalar((w * k) / PAGE_W);
+  m.position.set((cx - W / 2) * k, -(cy - H / 2) * k, -1);
+  m.rotation.set(0, 0, 0);
+}
+function showPage() {
+  pageP.mesh.visible = true;
+  pageP.mesh.material.opacity = 1;
+  drawPage();
+  placePage();
+}
+function hidePage() { pageP.mesh.visible = false; }
+
+function updateReadHtml() {
+  const t = Math.floor(S.readT);
+  const txt = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+  const el = document.getElementById('readTime');
+  if (el && el.textContent !== txt) {
+    el.textContent = txt;
+    if (renderer.xr.isPresenting) drawMain();
+  }
+}
+const fmtTime = (sec) => { const t = Math.round(sec); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+
+// ---------------------------------------------------------------- rule labels that fly from the page to the site
+const ANCHORS = {
+  crane: new THREE.Vector3(20.5, 10.5, -33),
+  edge: new THREE.Vector3(3.0, 15.2, -34),
+  trench: new THREE.Vector3(10.5, 4.4, -20.7),
+  reverse: new THREE.Vector3(-12.5, 5.6, -23.5),
+  swing: new THREE.Vector3(-2.5, 4.9, -22.5),
+  power: new THREE.Vector3(-17, 11.8, -31),
+  env: new THREE.Vector3(19, 5.0, -25.8),
+};
+const LABEL_AR = 176 / 768;
+// labels keep roughly the same size on screen wherever they sit on site
+const labelW = (c) => 0.2 * ANCHORS[c].distanceTo(HEAD);
+const labels = {};
+function labelTexture(c) {
+  const cv = document.createElement('canvas');
+  cv.width = 768; cv.height = 176;
+  const g = cv.getContext('2d');
+  g.fillStyle = 'rgba(18,24,32,0.9)';
+  roundRect(g, 0, 0, 768, 176, 26);
+  g.fill();
+  g.fillStyle = '#ffd200';
+  g.fillRect(0, 22, 12, 132);
+  g.textBaseline = 'top';
+  g.font = 'bold 48px Arial, Helvetica, sans-serif';
+  g.fillStyle = '#ffd200';
+  g.fillText(`Rule ${RULES[c].no} → live situation`, 38, 22);
+  g.font = 'bold 50px Arial, Helvetica, sans-serif';
+  g.fillStyle = '#ffffff';
+  g.fillText(RULES[c].short, 38, 92);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function makeLabel(c) {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTexture(c), transparent: true, depthTest: false, depthWrite: false }));
+  sp.renderOrder = 12;
+  scene.add(sp);
+  labels[c] = { sp, from: new THREE.Vector3(), a0: 0, t: 0, flying: false };
+  return labels[c];
+}
+const camWorld = new THREE.Vector3();
+function launchLabel(c) {
+  const L = labels[c] || makeLabel(c);
+  const r = paraRects[c] || { x: 600, y: 500, w: 700, h: 80 };
+  pageP.mesh.updateWorldMatrix(true, false);
+  const toLocal = (px, py) => new THREE.Vector3((px / 1600 - 0.5) * PAGE_W, (0.5 - py / 1000) * PAGE_H, 0.02);
+  const a = pageP.mesh.localToWorld(toLocal(r.x + 260, r.y + r.h / 2));
+  const b = pageP.mesh.localToWorld(toLocal(r.x + 260 + 400, r.y + r.h / 2));
+  camera.getWorldPosition(camWorld);
+  L.from.copy(a);
+  L.a0 = a.distanceTo(b) / a.distanceTo(camWorld);
+  L.t = 0;
+  L.flying = true;
+  L.sp.renderOrder = 25;
+  L.sp.visible = true;
+  L.sp.material.opacity = 1;
+}
+function placeLabelsNow() {
+  for (const c of CATS) {
+    const L = labels[c] || makeLabel(c);
+    L.flying = false;
+    L.sp.position.copy(ANCHORS[c]);
+    L.sp.scale.set(labelW(c), labelW(c) * LABEL_AR, 1);
+    L.sp.renderOrder = 12;
+    L.sp.material.opacity = 0.88;
+  }
+  S.converted = true;
+}
+const lblPos = new THREE.Vector3();
+function updateLabels(dt) {
+  camera.getWorldPosition(camWorld);
+  for (const c of CATS) {
+    const L = labels[c];
+    if (!L || !L.flying) continue;
+    L.t = Math.min(1, L.t + dt / CONV.fly);
+    const e = smooth(L.t);
+    const to = ANCHORS[c];
+    lblPos.lerpVectors(L.from, to, e);
+    lblPos.y += Math.sin(Math.PI * e) * 0.12 * L.from.distanceTo(to);
+    L.sp.position.copy(lblPos);
+    const a1 = labelW(c) / to.distanceTo(camWorld);
+    const a = Math.exp(Math.log(L.a0) * (1 - e) + Math.log(a1) * e);
+    const w = a * lblPos.distanceTo(camWorld);
+    L.sp.scale.set(w, w * LABEL_AR, 1);
+    if (L.t >= 1) { L.flying = false; L.sp.material.opacity = 0.88; L.sp.renderOrder = 12; }
+  }
+}
+
 // ---------------------------------------------------------------- HTML overlay (desktop and phone)
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -684,16 +1054,33 @@ const skillColor = (v) => (v < 0.45 ? '#ff6a4d' : v < 0.7 ? '#ffc94d' : '#3ccf7a
 function htmlMain() {
   let h = '';
   if (S.phase === 'intro') {
-    h += '<h1>ShiftReady</h1><div class="muted" style="font-size:13px">Construction site hazard trainer · live shift</div>';
-    h += '<p>Rules from a site safety procedure become live situations on this site. Spot each hazard before time runs out. Some things look risky but are safe, and wrong picks count as false alarms.</p>';
+    h += '<h1>ShiftReady</h1><div class="muted" style="font-size:13px">Site-specific clearance trainer</div>';
+    h += '<p style="margin:8px 0 6px">Before working on a new site, workers read its orientation documents. Here the same rules become a live shift on this site.</p>';
+    h += '<ol class="steps"><li><b>Choose your role.</b></li><li><b>The usual way:</b> look at the orientation page you would normally read.</li><li><b>Turn it into training:</b> each rule becomes a live situation on site.</li><li><b>Get cleared:</b> spot a breach of every rule to be cleared for site entry.</li></ol>';
     h += '<b>Choose your role</b><div class="row" style="margin:6px 0 12px">';
     for (const k of ROLE_KEYS) h += `<button data-id="role_${k}" class="${S.role === k ? 'on' : ''}">${ROLE_SHORT[k]}</button>`;
-    h += `</div><div class="row"><button data-id="start" class="primary">${S.shiftNo ? `Start shift ${S.shiftNo + 1}` : 'Start shift'}</button>`;
+    h += `</div><div class="row"><button data-id="start" class="primary">${S.converted ? `Start shift ${S.shiftNo + 1}` : 'Start'}</button>`;
     h += `<button data-id="sound">${audio.on ? 'Sound: on' : 'Sound: off'}</button></div>`;
-    h += '<p class="muted">Procedure SP-CON-012 is fictional. On a Quest headset, open this page in the browser and press Enter VR.</p>';
+    h += '<p class="muted">The orientation document and site are fictional. On a Quest headset, open this page in the browser and press Enter VR.</p>';
+  } else if (S.phase === 'docs') {
+    h += '<div class="usual"><div class="tag">THE USUAL WAY</div>';
+    h += `<div class="big">Reading time <span id="readTime">${fmtTime(S.readT)}</span></div>`;
+    h += `<div class="stat">Pages read <b>${S.pagesRead.size} of ${PROCEDURE.pages}</b></div>`;
+    h += '<div class="stat">Situations practised <b>0</b></div><div class="stat">Feedback received <b>none</b></div><div class="stat">Adapted to you <b>no</b></div>';
+    h += '<p class="note2">Every rule is here. None of it is practised.</p>';
+    h += '<div class="row"><button data-id="nextpage">Next page</button><button data-id="convert" class="primary">Turn this into training</button></div></div>';
+  } else if (S.phase === 'convertAll') {
+    h += '<h2>From the page to the site</h2>';
+    h += `<div class="msg">${S.litNow ? `Rule ${RULES[S.litNow].no} → live situation<br><span style="font-weight:normal">${esc(RULES[S.litNow].short)}</span>` : 'Reading the rules…'}</div>`;
+    h += `<div class="muted">${S.lit.size} of ${CATS.length} rules placed on site</div>`;
+  } else if (S.phase === 'countdown') {
+    h += `<div class="count" id="countNum">${Math.max(1, 3 - Math.floor(S.phaseT))}</div><div style="text-align:center;font-weight:bold">Your shift starts on the viewing deck</div>`;
+    h += `<div class="muted" style="text-align:center;margin-top:4px">${esc(ROLES[S.role].label)} · ${SITUATIONS_PER_SHIFT} situations · every rule once</div>`;
   } else if (S.phase === 'debrief') {
     const avg = S.reactions.length ? (S.reactions.reduce((a, b) => a + b, 0) / S.reactions.length).toFixed(1) + ' s' : '-';
     h += `<h2>Shift ${S.shiftNo} debrief</h2>`;
+    if (S.cleared) h += '<div class="clear ok">✓ Cleared for site entry</div><div class="muted" style="margin-bottom:6px">You spotted a breach of every rule on the page.</div>';
+    else h += `<div class="clear no">Not yet cleared</div><div style="font-size:13px;margin-bottom:6px">Still to spot: ${S.uncleared.map((c) => `${RULES[c].no} ${esc(RULES[c].short)}`).join(', ')}</div>`;
     h += `<div>Caught <b>${S.caught} of ${S.records.length}</b> · Avg reaction <b>${avg}</b><br>False alarms <b>${S.falseAlarms}</b> · Best streak <b>${S.best}</b></div>`;
     h += `<div class="score" style="margin:8px 0">${S.score} <span class="muted">points</span></div>`;
     h += `<div class="yellow" style="font-size:13px">${S.badges.length ? 'Badges: ' + S.badges.map((b) => esc(BADGES[b])).join(' · ') : 'Badges: none yet'}</div>`;
@@ -702,7 +1089,13 @@ function htmlMain() {
       const v = S.skill[c];
       h += `<div class="skill"><span>${RULES[c].no} ${esc(RULES[c].short)}</span><div class="track"><div style="width:${Math.round(v * 100)}%;background:${skillColor(v)}"></div></div><span>${Math.round(v * 100)}%</span></div>`;
     }
-    h += '<div class="row" style="margin-top:10px"><button data-id="next" class="primary">Next shift</button><button data-id="csv" class="blue">Export CSV</button><button data-id="roles">Change role</button></div>';
+    const seen = new Set(S.records.map((r) => r.cat)).size;
+    h += '<table class="cmp"><tr><th></th><th>The usual way</th><th>ShiftReady</th></tr>';
+    h += `<tr><td>Time</td><td>${fmtTime(S.readT)} reading</td><td>${fmtTime(S.shiftT)} on site</td></tr>`;
+    h += `<tr><td>Rules practised</td><td>0</td><td>${seen} of ${CATS.length}</td></tr>`;
+    h += '<tr><td>Feedback</td><td>none</td><td>on every situation</td></tr><tr><td>Adapted to you</td><td>no</td><td>yes</td></tr></table>';
+    h += `<div class="row" style="margin-top:10px"><button data-id="next" class="primary">Next shift</button><button data-id="page" class="${S.review ? 'on' : ''}">${S.review ? 'Hide the page' : 'Show the page again'}</button></div>`;
+    h += '<div class="row" style="margin-top:6px"><button data-id="csv" class="blue">Export CSV</button><button data-id="roles">Change role</button></div>';
   } else {
     const mult = 1 + 0.5 * Math.min(S.streak, 4);
     h += `<div class="row" style="justify-content:space-between"><span class="muted">Shift ${S.shiftNo} · ${esc(ROLES[S.role].label)}</span><span class="muted">Situation ${Math.max(1, S.idx)} of ${SITUATIONS_PER_SHIFT}</span></div>`;
@@ -728,18 +1121,22 @@ function updateTimerHtml() {
 
 function htmlDoc() {
   const active = ['convert', 'live', 'resolve'].includes(S.phase) ? S.cat : null;
-  let h = `<div class="head"><b>${PROCEDURE.code} · ${PROCEDURE.rev}</b><br><span style="font-size:12px;opacity:.85">Site Safety Procedure · ${PROCEDURE.page}</span></div>`;
+  let h = `<div class="head"><b>${PROCEDURE.code} · ${PROCEDURE.rev}</b><br><span style="font-size:12px;opacity:.85">Site-specific orientation · ${PROCEDURE.page}</span></div>`;
   if (active) h += `<div class="banner">Rule ${RULES[active].no} → live situation on site</div>`;
   h += `<div class="note">${esc(PROCEDURE.note)}</div>`;
   for (const c of CATS) {
     const cls = c === active ? (S.phase === 'convert' ? 'rule convert' : 'rule live') : 'rule';
     h += `<div class="${cls}"><b>${RULES[c].no} ${esc(RULES[c].short)}</b>${esc(RULES[c].text)}</div>`;
   }
-  $('docBox').innerHTML = h;
+  const box = $('docBox');
+  box.innerHTML = h;
+  const act = box.querySelector('.rule.convert, .rule.live');
+  if (act && act.offsetTop + act.offsetHeight > box.clientHeight - 8) box.scrollTop = act.offsetTop - 70;
+  else box.scrollTop = 0;
 }
 
 function htmlCoach() {
-  $('coachBox').innerHTML = `<div class="name">Riley · Site safety coach</div><div class="text">${esc(coachState.text)}</div>`
+  $('coachBox').innerHTML = `<div class="name">Riley · Site coach</div><div class="text">${esc(coachState.text)}</div>`
     + '<div class="row chips"><button data-id="q_why">Why train this way?</button><button data-id="q_rule">What does this rule say?</button>'
     + '<button data-id="q_next">What should I practise next?</button><button data-id="q_how">How am I doing?</button></div>'
     + `<div class="muted" style="color:#6b7a8c;margin-top:5px">${esc(voiceLabel())}</div>`;
@@ -753,9 +1150,13 @@ for (const id of ['hudBox', 'coachBox']) {
 }
 $('docToggle').addEventListener('click', () => $('docBox').classList.toggle('open'));
 
+const PAGE_PHASES = ['docs', 'convertAll', 'countdown'];
 function drawAll() {
+  docP.mesh.visible = !(PAGE_PHASES.includes(S.phase) || S.review || S.phase === 'intro');
+  document.body.classList.toggle('review', S.review);
   if (renderer.xr.isPresenting) { drawMain(); drawDoc(); drawBubble(); drawChips(); }
   htmlMain(); htmlDoc(); htmlCoach();
+  if (pageP.mesh.visible) { drawPage(); placePage(); }
 }
 
 // ---------------------------------------------------------------- coach
@@ -765,6 +1166,7 @@ function coachSay(text) {
   coachState.speaking = Math.min(8, 1.5 + text.length / 16);
   if (renderer.xr.isPresenting) drawBubble();
   htmlCoach();
+  placePage();
   if (!audio.on) return;
   cue('radio');
   if (speechOk) {
@@ -799,7 +1201,7 @@ function offlineAnswer(q) {
     const s = hits(toks, f.keys);
     if (s > bestScore) { bestScore = s; best = f.a; }
   }
-  return bestScore > 0 ? best : 'I can answer questions about the site procedure. Try asking about suspended loads, open edges, trenches, reversing trucks, the excavator or power lines.';
+  return bestScore > 0 ? best : 'I can answer questions about the site procedure. Try asking about suspended loads, open edges, trenches, reversing trucks, the excavator, power lines or protected ground.';
 }
 
 function stateSummary() {
@@ -821,7 +1223,7 @@ function chip(id) {
   if (id === 'q_why') return coachSay(FAQ[0].a);
   if (id === 'q_rule') {
     const c = S.cat || S.lastCat;
-    if (!c) return coachSay('The first rule appears when the shift starts. The procedure page on your left lists all six.');
+    if (!c) return coachSay('The first rule appears when the shift starts. The orientation page lists all seven.');
     if (S.phase === 'live' && S.skill[c] >= ROLES[S.role].hint) return coachSay('I won\'t give that one away while it\'s live. Check the highlighted rule on the procedure page.');
     return coachSay(`Rule ${RULES[c].no}, ${RULES[c].short}: ${RULES[c].text}`);
   }
@@ -850,16 +1252,21 @@ function initAudioOnce() {
   engines.ex = addEngine(excavator.userData.house, 44, 0.3);
   engines.boom = addEngine(boomTruck, 60, 0.18);
   engines.crane = addEngine(crane.userData.trolley, 118, 0.05, { ref: 10 });
+  engines.pickup = addEngine(pickup, 70, 0.2);
+  setEngineLoad(engines.pickup, 0.05);
 }
 
 // ---------------------------------------------------------------- input
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
-function isShown(o) { while (o) { if (!o.visible) return false; o = o.parent; } return true; }
+function isShown(o) {
+  if (o.userData && o.userData.panel && !o.parent) return false;
+  while (o) { if (!o.visible) return false; o = o.parent; } return true;
+}
 function actorOf(o) { while (o) { if (o.userData && o.userData.actorId) return actors[o.userData.actorId]; o = o.parent; } return null; }
 
 function handleRay() {
-  const targets = (renderer.xr.isPresenting ? panels.map((p) => p.mesh) : []).concat(hitTargets);
+  const targets = (renderer.xr.isPresenting ? panels.map((p) => p.mesh) : (pageP.mesh.visible ? [pageP.mesh] : [])).concat(hitTargets);
   const hits = raycaster.intersectObjects(targets, false).filter((h) => isShown(h.object));
   if (!hits.length) return null;
   // panels are drawn on top, so they win whenever they are hit
@@ -888,8 +1295,27 @@ function onActor(a) {
 function onButton(id) {
   initAudioOnce();
   if (id.startsWith('role_')) { const r = id.slice(5); if (r !== S.role) { S.role = r; S.skill = baseSkills(r); } drawAll(); return; }
-  if (id === 'start' || id === 'next') return startShift(S.role);
-  if (id === 'roles') { setPhase('intro'); drawAll(); return; }
+  if (id === 'start') return S.converted ? beginCountdown() : enterDocs();
+  if (id === 'next') { S.review = false; hidePage(); return beginCountdown(); }
+  if (id === 'nextpage' && S.phase === 'docs') {
+    S.docPage = (S.docPage + 1) % DOC_PAGES.length;
+    S.pagesRead.add(DOC_PAGES[S.docPage].no);
+    drawAll();
+    return;
+  }
+  if (id === 'convert' && S.phase === 'docs') return beginConvertAll();
+  if (id === 'page' && S.phase === 'debrief') {
+    S.review = !S.review;
+    if (S.review) {
+      S.docPage = 0;
+      showPage();
+      coachSay(`Here is the page again. Reading it took ${fmtTime(S.readT)} and practised nothing. On site you saw ${new Set(S.records.map((r) => r.cat)).size} of ${CATS.length} rules happen and got feedback on each.`);
+    } else hidePage();
+    drawAll();
+    return;
+  }
+  if (id === 'pageback') { S.review = false; hidePage(); drawAll(); return; }
+  if (id === 'roles') { S.review = false; hidePage(); setPhase('intro'); drawAll(); return; }
   if (id === 'end') return finishShift();
   if (id === 'csv') return exportCSV();
   if (id === 'sound') { setSound(!audio.on); if (!audio.on && speechOk) window.speechSynthesis.cancel(); drawAll(); return; }
@@ -980,11 +1406,13 @@ renderer.xr.addEventListener('sessionstart', () => {
   camera.rotation.set(0, 0, 0);
   layoutPanels();
   drawAll();
+  placePage();
 });
 renderer.xr.addEventListener('sessionend', () => {
   document.getElementById('bar').style.display = '';
   layoutPanels();
   drawAll();
+  placePage();
 });
 
 // HTML question box (desktop)
@@ -1026,6 +1454,7 @@ function tick() {
   if (!renderer.xr.isPresenting) camera.rotation.set(pitch, yaw, 0);
   updateEquipment(dt);
   updateShift(dt);
+  updateLabels(dt);
   updateXR(dt);
   // coach gestures while talking
   if (coachState.speaking > 0) {
@@ -1054,8 +1483,10 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   layoutPanels();
+  placePage();
 });
 
+setPhase('intro');
 drawAll();
 
 // ---------------------------------------------------------------- test hooks
@@ -1068,7 +1499,10 @@ window.__sr = {
     v.project(camera);
     return { x: (v.x + 1) / 2 * window.innerWidth, y: (1 - v.y) / 2 * window.innerHeight, z: v.z };
   },
-  start: (role) => startShift(role || S.role),
+  start: (role) => { if (role) S.role = role; if (!S.converted) placeLabelsNow(); startShift(role || S.role); },
+  labels, pageP, paraRects: () => paraRects,
+  drawXR: () => { drawMain(); drawDoc(); drawBubble(); },
+  panelPNG: (name) => ({ main: mainP, doc: docP, page: pageP, bubble: bubbleP })[name].c.toDataURL('image/png'),
   click: (id) => onActor(actors[id]),
   button: (id) => onButton(id),
   look: (y, p) => { yaw = y; pitch = p; },

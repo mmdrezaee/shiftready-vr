@@ -602,3 +602,80 @@ export function makeSiteOffice(deckY) {
   for (let i = 0; i < 8; i++) box(1.0, 0.1, 0.4, M.steel, 4.3, deckY - 0.35 - i * 0.37, -0.4 - i * 0.32, g);
   return g;
 }
+
+// ---------- light vehicle (pickup) ----------
+export function makePickup(color = 0xf4f4f4) {
+  const g = new THREE.Group();
+  const body = std(color, { roughness: 0.45, metalness: 0.3 });
+  box(1.9, 0.55, 5.0, body, 0, 0.75, 0, g);
+  box(1.85, 0.75, 2.0, body, 0, 1.4, 0.75, g);
+  box(1.7, 0.5, 0.05, M.glass, 0, 1.45, 1.76, g);
+  box(0.05, 0.45, 1.5, M.glass, 0.93, 1.45, 0.75, g);
+  box(0.05, 0.45, 1.5, M.glass, -0.93, 1.45, 0.75, g);
+  box(1.9, 0.45, 0.08, body, 0, 1.25, -2.46, g);
+  box(0.08, 0.45, 2.3, body, 0.91, 1.25, -1.35, g);
+  box(0.08, 0.45, 2.3, body, -0.91, 1.25, -1.35, g);
+  box(1.95, 0.08, 0.2, M.lime, 0, 1.0, 2.45, g);
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), new THREE.MeshBasicMaterial({ color: 0xff9a1a }));
+  beacon.position.set(0, 1.86, 0.6);
+  g.add(beacon);
+  const whip = cyl(0.015, 0.015, 1.6, M.orange, 6);
+  whip.position.set(-0.8, 2.3, -2.3);
+  g.add(whip);
+  for (const z of [1.55, -1.55]) for (const x of [-0.95, 0.95]) wheel(0.42, 0.3, x, 0.42, z, g);
+  const hit = box(2.6, 2.6, 5.8, M.hit, 0, 1.2, 0, g);
+  hit.userData.isHit = true;
+  g.userData.beacon = beacon;
+  return g;
+}
+
+// ---------- environmentally sensitive area with a wildlife corridor ----------
+export const PROTECTED = { x0: 15.5, x1: 22.5, z0: -23.0, z1: -28.5 };
+
+function spruce(x, z, s, parent) {
+  const t = new THREE.Group();
+  const trunk = cyl(0.12 * s, 0.16 * s, 1.0 * s, M.wood, 8);
+  trunk.position.y = 0.5 * s;
+  t.add(trunk);
+  const needles = std(0x2f5d3a, { roughness: 0.9 });
+  for (let i = 0; i < 3; i++) {
+    const c = new THREE.Mesh(new THREE.ConeGeometry((1.1 - i * 0.28) * s, 1.5 * s, 10), needles);
+    c.position.y = (1.3 + i * 0.85) * s;
+    t.add(c);
+  }
+  t.position.set(x, 0, z);
+  parent.add(t);
+}
+
+export function makeProtectedArea() {
+  const { x0, x1, z0, z1 } = PROTECTED;
+  const g = new THREE.Group();
+  const w = x1 - x0, d = z0 - z1;
+  const grassTex = noiseTex('#6f8f45', 50, 1, 60, 'rgba(40,70,20,0.18)');
+  grassTex.repeat.set(2, 2);
+  const grass = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ map: grassTex, roughness: 1 }));
+  grass.rotation.x = -Math.PI / 2;
+  grass.position.set((x0 + x1) / 2, 0.025, (z0 + z1) / 2);
+  g.add(grass);
+  // orange snow fence on the sides and back
+  const fence = new THREE.MeshStandardMaterial({ color: 0xff6a13, transparent: true, opacity: 0.8, side: THREE.DoubleSide, roughness: 0.8 });
+  const run = (ax, az, bx, bz) => {
+    const L = Math.hypot(bx - ax, bz - az);
+    const m = box(L, 1.1, 0.03, fence, (ax + bx) / 2, 0.6, (az + bz) / 2, g);
+    m.rotation.y = Math.atan2(-(bz - az), bx - ax);
+    const n = Math.round(L / 1.75);
+    for (let i = 0; i <= n; i++) box(0.06, 1.3, 0.06, M.steel, ax + (bx - ax) * i / n, 0.65, az + (bz - az) * i / n, g);
+  };
+  run(x0, z0, x0, z1);
+  run(x1, z0, x1, z1);
+  run(x0, z1, x1, z1);
+  // front edge: stakes with flagging tape
+  for (let x = x0; x <= x1 + 0.01; x += 1.4) box(0.05, 1.0, 0.05, M.wood, x, 0.5, z0, g);
+  box(w, 0.06, 0.01, std(0xff3b6b), (x0 + x1) / 2, 0.92, z0, g);
+  spruce(x0 + 0.9, z1 + 0.9, 1.2, g);
+  spruce(x1 - 0.9, z1 + 0.8, 1.0, g);
+  spruce(x0 + 0.8, z0 - 1.6, 0.8, g);
+  spruce((x0 + x1) / 2 - 0.4, z1 + 0.7, 0.9, g);
+  sign(['PROTECTED AREA', 'NO VEHICLES · WILDLIFE CORRIDOR'], 2.4, 0.9, { bg: '#2f7d4a', fg: '#ffffff', border: '#ffffff', font: 54 }, x0 - 0.3, 0, z0 + 0.6, -0.45, g, 1.0);
+  return g;
+}

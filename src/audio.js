@@ -145,5 +145,8 @@ export function cue(kind) {
   else if (kind === 'false') { tone(300, 0, 0.18, 'square', 0.08); tone(240, 0.16, 0.2, 'square', 0.08); }
   else if (kind === 'radio') { tone(1400, 0, 0.06, 'square', 0.05, 2400); burst(0.04, 3000, 0.07); }
   else if (kind === 'convert') { tone(520, 0, 0.12, 'triangle', 0.1); tone(780, 0.1, 0.18, 'triangle', 0.1); }
+  else if (kind === 'whoosh') { burst(0.1, 1200, 0); tone(420, 0, 0.3, 'sine', 0.05, 900); }
+  else if (kind === 'tick') { tone(880, 0, 0.08, 'sine', 0.12); }
+  else if (kind === 'cleared') { tone(523, 0, 0.18, 'sine', 0.16); tone(659, 0.15, 0.18, 'sine', 0.16); tone(784, 0.3, 0.18, 'sine', 0.16); tone(1047, 0.45, 0.4, 'sine', 0.16); }
   else if (kind === 'badge') { tone(784, 0, 0.15, 'sine', 0.15); tone(1047, 0.12, 0.15, 'sine', 0.15); tone(1319, 0.24, 0.3, 'sine', 0.15); }
 }
